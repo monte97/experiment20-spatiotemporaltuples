@@ -1,3 +1,11 @@
+# Spatiotemporal tuples
+
+Hello spatiotemporal tuples
+
+```bash
+$ ./gradlew hello
+```
+
 # Learning simulations with ScaFi-Alchemist
 
 * ScaFi is an aggregate programming framework

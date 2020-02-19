@@ -90,7 +90,7 @@ class SpatialTuples extends AggregateProgram with StandardSensors with Gradients
       case _ => (TupleResult("invalid"), Terminated)
     }
 
-    node.put(toid.uid+"_status", if(res._2==Output) 2 else if(res._1==Bubble) 1 else 0)
+    node.put(toid.uid+"_status", if(res._2==Output) 2 else if(res._2==Bubble) 1 else 0)
     //println(s"[$mid] $toid -> $res")
     res
   }
@@ -172,7 +172,7 @@ class SpatialTuples extends AggregateProgram with StandardSensors with Gradients
 
     val didRead = broadcastUnbounded(mid==initiator, mid==initiator && !result.isEmpty)
     if(myTupleChosen && didRead){ emitEvent(TupleRemovalDone) }
-    val done = broadcastUnbounded(myTupleChosen && didRead, (myTupleChosen && didRead) && localProcs.forall(_!=outProcess))
+    val done = broadcastUnbounded(myTupleChosen && didRead, (myTupleChosen && didRead) && localProcs.forall(lp => outProcess.map(_!=lp).getOrElse(true)))
 
     // IN bubble closing similar to read
     val (gotIt,canClose) = rep((false,false))(f => {
@@ -196,7 +196,7 @@ class SpatialTuples extends AggregateProgram with StandardSensors with Gradients
   }
 
   def broadcastUnbounded[V](source: Boolean, field: V): V =
-    G[V](source, field, v => v, nbrRange)
+    G[V](source, field, v => v, nbrRange _)
 
   case class ProcArg(localTuples: Set[Tuple], procs: Set[TupleOpId])
 

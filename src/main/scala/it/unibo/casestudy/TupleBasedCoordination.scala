@@ -23,6 +23,7 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
   def current2DPosition(): Point2D = Point2D(currentPosition().x, currentPosition().y)
 
   override def main(): Any = {
+    k = rep(0)(_+1)
     val task: Option[String] = solveWithMatch("task(T)", "T")
     node.put("task", task)
     val taskGenerator = mid % 2 == 0
@@ -34,6 +35,21 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
     val p1 = out("task(x)", when = doGenerateTask)
 
     val p2 = rd(tt = "task(X)", when = doReadTask)
+
+    p2.continueWith(
+      tupleOperation _,
+      (toid,res) => if(res.datum!="not-found"){ Some(TupleOpId(toid.uid+"_c")(OutMe(s"done(${res.datum})", mid, extension = 20))) } else { None },
+      map => ProcArg()
+    ).onExit(toid => toid.op match {
+      case OutHere(t,_) => removeTuple(t)
+      case _ =>
+    }).map(toid => {
+      toid._1.op match {
+        case OutMe(t,_,_) => addTupleIfNotAlreadyThere(t)
+        case _ =>
+      }
+      toid
+    })
 
     node.put("p1", p1)
     node.put("p2", p2)
@@ -59,15 +75,18 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
     node.put("theory", tupleSpace.getTheory.toString)
   }
 
+  // TODO: add to stdlib
+  def once = rep((true,true)){ case (first,value) => (false, if(first) true else false) }._2
+
   def rd(tt: String, when: Boolean): Map[TupleOpId,TupleResult] = {
-    val top = TupleOpId(s"rd_${mid}_${k}")(Read(tt, mid))
+    val top = TupleOpId(s"rd_${mid}_${k}")(Read(tt, mid, extension = 20))
     sspawn[TupleOpId,ProcArg,TupleResult](tupleOperation _, if(when) Set(top) else Set.empty, ProcArg())
       .act((_, res) => addTupleIfNotAlreadyThere(res.datum))
   }
 
-  def out(tuple: String, when: Boolean): Map[TupleOpId,TupleResult] = {
+  def out(tuple: String, when: Boolean, args: ProcArg = ProcArg()): Map[TupleOpId,TupleResult] = {
     val top = TupleOpId("out"+k)(OutMe(tuple, mid, 20))
-    sspawn(tupleOperation _, if(when) Set(top) else Set.empty, ProcArg()).onExit(toid => toid.op match {
+    sspawn(tupleOperation _, if(when) Set(top) else Set.empty, args).onExit(toid => toid.op match {
       case OutHere(t,_) => removeTuple(t)
       case _ =>
     }).map(toid => {
@@ -80,11 +99,11 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
   }
 
 
-  type Process[K,A,R] = K => A => (R, Boolean)
+  type Process[K,A,R] = K => A => (R, Spawn.Status)
 
   implicit class RichProcessOutput[K,V](pout: Map[K,V]) {
-    def continueWith[K2,A2,R2](process: Process[K2,A2,R2], keyGen: K=>Option[K2], argGen: Map[K,V]=>A2): Map[K2,R2] = {
-      spawn[K2,A2,R2](process, pout.keySet.flatMap(keyGen(_)), argGen(pout))
+    def continueWith[K2,A2,R2](process: Process[K2,A2,R2], keyGen: (K,V)=>Option[K2], argGen: Map[K,V]=>A2): Map[K2,R2] = {
+      sspawn[K2,A2,R2](process, pout.flatMap(kv => keyGen(kv._1, kv._2)).toSet, argGen(pout))
     }
 
     def onExit(action: K => Unit): Map[K,V] = {
@@ -185,8 +204,8 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
       (shouldBeDone, f._2 || (shouldBeDone && f._1))
     })
     (TupleResult(result.map(_.solution).getOrElse("not-found")), if(mid==initiator){
-      if(canClose){ print("#"); Terminated } else if(gotIt) Output else Bubble
-    } else if(g<extension) Bubble else External)
+      if(canClose){ Terminated } else if(gotIt) { Output } else { Bubble }
+    } else if(g<extension) { Bubble } else { External })
   }
 
   def InLogic(toid: TupleOpId, inOp: In, arg: ProcArg): (TupleResult, Status) = {

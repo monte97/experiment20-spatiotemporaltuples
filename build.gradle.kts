@@ -154,6 +154,8 @@ fun makeTest(
     }*/
 }
 
-makeTest(name="hello", file = "spatial_tuples", time = 10000.0, vars = setOf(), taskSize = 2800, effects =  "spatial_tuples")
+makeTest(name="stuples", file = "spatial_tuples", time = 10000.0, vars = setOf(), taskSize = 2800, effects =  "spatial_tuples")
+makeTest(name="tbcoord", file = "tuple_based_coordination", time = 10000.0, vars = setOf(), taskSize = 2800, effects =  "spatial_tuples")
+
 
 defaultTasks("fatJar")

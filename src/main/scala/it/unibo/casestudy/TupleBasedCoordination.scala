@@ -36,9 +36,19 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
 
     val p2 = rd(tt = "task(X)", when = doReadTask)
 
+    val p3 = outs(
+      p2.tuplesRead.map(t => (s"done(device(${mid}),${t})"))
+    )
+    /*
+      p2.flatMap(kv => {
+        if(kv._2.datum!="not-found"){ Some(TupleOpId(kv._1.uid+"_c")(OutMe(s"done(${kv._2.datum})", mid, extension = 20))) } else { None }
+      }).toSet
+     */
+
+    /*
     p2.continueWith(
       tupleOperation _,
-      (toid,res) => if(res.datum!="not-found"){ Some(TupleOpId(toid.uid+"_c")(OutMe(s"done(${res.datum})", mid, extension = 20))) } else { None },
+      (toid,res) => if(res.datum!="not-found"){ Some(TupleOpId(toid.uid+"_c")(OutMe(s"done(device(${mid}),${res.datum})", mid, extension = 20))) } else { None },
       map => ProcArg()
     ).onExit(toid => toid.op match {
       case OutHere(t,_) => removeTuple(t)
@@ -50,9 +60,9 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
       }
       toid
     })
+     */
 
-    node.put("p1", p1)
-    node.put("p2", p2)
+    node.put("p1", p1); node.put("p2", p2); node.put("p3", p3)
 
     /*
     // From the beginning
@@ -99,6 +109,19 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
   }
 
 
+  def outs(tuplesToOut: Iterable[String], args: ProcArg = ProcArg()): Map[TupleOpId,TupleResult] = {
+    sspawn(tupleOperation _, tuplesToOut.map(t => TupleOpId(s"${mid}_out_${t.hashCode}")(OutMe(t,mid,20))).toSet, args).onExit(toid => toid.op match {
+      case OutHere(t,_) => removeTuple(t)
+      case _ =>
+    }).map(toid => {
+      toid._1.op match {
+        case OutMe(t,_,_) => addTupleIfNotAlreadyThere(t)
+        case _ =>
+      }
+      toid
+    })
+  }
+
   type Process[K,A,R] = K => A => (R, Spawn.Status)
 
   implicit class RichProcessOutput[K,V](pout: Map[K,V]) {
@@ -113,6 +136,10 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
     def act(action: (K,V) => Unit): Map[K,V] = {
       pout.foreach(tp => action(tp._1, tp._2))
       pout
+    }
+
+    def tuplesRead = pout.collect {
+      case (t@TupleOpId(_),TupleResult(datum)) if t.op.isInstanceOf[Read] => datum
     }
   }
 

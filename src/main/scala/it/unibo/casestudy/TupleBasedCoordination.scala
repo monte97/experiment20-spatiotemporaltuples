@@ -32,13 +32,22 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
     val doReadTask = !taskGenerator && task.isEmpty
     node.put("doReadTask", doReadTask)
 
-    val p1 = out("task(x)", when = doGenerateTask)
+    // APPROACH 1
 
-    val p2 = rd(tt = "task(X)", when = doReadTask)
+    var p1 = out("task(x)", when = doGenerateTask)
 
-    val p3 = outs(
+    var p2 = rd(tt = "task(X)", when = doReadTask)
+
+    var p3 = outs(
       p2.tuplesRead.map(t => (s"done(device(${mid}),${t})"))
     )
+
+    /*
+    var p4 = p2.forEach(t => {
+      out(s"done(device(${mid}),${t})")
+    })
+     */
+
     /*
       p2.flatMap(kv => {
         if(kv._2.datum!="not-found"){ Some(TupleOpId(kv._1.uid+"_c")(OutMe(s"done(${kv._2.datum})", mid, extension = 20))) } else { None }
@@ -62,7 +71,18 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
     })
      */
 
-    node.put("p1", p1); node.put("p2", p2); node.put("p3", p3)
+    // APPROACH 2
+
+    /*
+    val op1 = sspawn[TupleOpId,ProcArg,TupleResult](
+      OUT("task(y)"),
+      generateOpId(doGenerateTask, "out"),
+      ProcArg()
+    )
+    node.put("pp1", op1);
+     */
+
+    // node.put("p1", p1); node.put("p2", p2); node.put("p3", p3)
 
     /*
     // From the beginning
@@ -84,6 +104,10 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
 
     node.put("theory", tupleSpace.getTheory.toString)
   }
+
+  def generateOpId(when: Boolean, desc: String): Set[TupleOpId] = branch(when) {
+    Set(TupleOpId(s"${mid}_${rep(k)(k => k)}_${desc}")(null))
+  } { Set.empty }
 
   // TODO: add to stdlib
   def once = rep((true,true)){ case (first,value) => (false, if(first) true else false) }._2
@@ -185,6 +209,16 @@ class TupleBasedCoordination extends AggregateProgram with TupleSpace with Stand
     node.put(toid.uid+"_status", if(res._2==Output) 2 else if(res._2==Bubble) 1 else 0)
     // println(s"[$mid] $toid -> $res")
     res
+  }
+
+  case class TupleProcessDescriptor(
+                                   process: Process[TupleOpId,ProcArg,TupleResult],
+                                   generateWhen: () => Boolean,
+                                   arguments: () => ProcArg
+                                   )
+
+  def OUT(tuple: Tuple, extension: Double = 20): TupleOpId => ProcArg => (TupleResult, Status) = {
+    toid => arg => OutMeLogic(toid, OutMe(tuple, mid, extension), arg)
   }
 
   def OutMeLogic(toid: TupleOpId, outOp: OutMe, arg: ProcArg): (TupleResult, Status) = {

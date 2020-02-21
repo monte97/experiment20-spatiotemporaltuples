@@ -1,8 +1,14 @@
 package it.unibo.casestudy
 
+import it.unibo.alchemist.model.scafi.ScafiIncarnationForAlchemist._
 import it.unibo.scafi.space.{Point2D, Point3D}
 
-trait Region {
+trait Situation
+
+case class AroundMe(extension: Double) extends Situation
+object Me extends AroundMe(0)
+
+trait Region extends Situation {
   def withinRegion(p: Point2D): Boolean
 }
 

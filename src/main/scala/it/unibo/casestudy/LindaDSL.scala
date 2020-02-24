@@ -88,9 +88,9 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
 
     process(taskStealer){
       when(doReadTask) { in("task(X)") }.evolve((tuple: Tuple)  => {
-        out(s"currentTaskIn(${tuple})" @@ Me)
+        out(s"currentTask(${tuple})" @@ Me)
       }).evolve((tuple: Tuple) => {
-        out(s"doneIn(device(${mid}),${tuple})" @@ AroundMe(30))
+        out(s"done(device(${mid}),${tuple})" @@ AroundMe(30))
       })
     }
 
@@ -103,7 +103,7 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
     }
 
     node.put("theory", tupleSpace.getTheory.toString)
-    node.put("events", events)
+    node.put("events", events.mkString("\n"))
   }
 
   class LindaDSL {
@@ -186,6 +186,7 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
       case _ => ??? // (OperationResult("invalid"), Terminated)
     }
 
+    node.put(toid.uid+"_op", toid.op)
     node.put(toid.uid+"_status", if(res._2==Output) 2 else if(res._2==Bubble) 1 else 0)
     // println(s"[$mid] $toid -> $res")
     res
@@ -269,7 +270,7 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
     val didRead = broadcastUnbounded(mid==initiator, mid==initiator && !result.isEmpty)
     val intermediaryGotAckFromReader = keep { myTupleChosen && didRead }
     if(intermediaryGotAckFromReader){
-      println(s"$mid > IN > the initiator $initiator did read the tuple $tupleFound: emitting TupleRemovalDone");
+      println(s"$mid > IN > the initiator $initiator did read the tuple $tupleFound: emitting TupleRemovalDone [$toid]");
       emitEvent(TupleRemovalDone(result.get))
     }
     val ensureOutTermination = true // && localProcs.forall(lp => outProcess.map(_!=lp).getOrElse(true)))
@@ -281,7 +282,7 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
       (shouldBeDone, f._2 || (shouldBeDone && f._1))
     })
     if(canClose){
-      println(s"$mid > IN > $result -- can close!!!!")
+      println(s"$mid > IN > $result -- can close!!!!  [$toid]")
       addTupleIfNotAlreadyThere(result.get)
     }
     (OperationResult(if(result.isDefined) OperationStatus.completed else OperationStatus.inProgress, result), if(mid==initiator){

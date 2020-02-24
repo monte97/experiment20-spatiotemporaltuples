@@ -25,10 +25,10 @@ object LindaTupleSupport {
     val in: Op = new Op { override def toString: String = "in" }
   }
 
-  trait TupleOp
+  trait TupleOp { val initiator: ID }
   case class OutMe(datum: Tuple, val initiator: ID, val extension: Double = 0) extends TupleOp
-  case class OutHere(datum: Tuple, val position: Point2D, val extension: Double = 0) extends TupleOp
-  case class OutInRegion(datum: Tuple, val region: Region) extends TupleOp
+  case class OutHere(datum: Tuple, val initiator: ID, val position: Point2D, val extension: Double = 0) extends TupleOp
+  case class OutInRegion(datum: Tuple, val initiator: ID, val region: Region) extends TupleOp
   case class Read(template: TupleTemplate, val initiator: ID, val extension: Double = Double.PositiveInfinity) extends TupleOp
   case class In(template: TupleTemplate, val initiator: ID, val extension: Double = Double.PositiveInfinity) extends TupleOp
 
@@ -57,22 +57,39 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
 
   val linda = new LindaDSL
 
+  lazy val initialiseTasks = if(mid == 8 || mid == 117){
+    addTuple(s"taskToGenerate(task(x$mid))")
+    addTuple(s"taskToGenerate(task(y$mid))")
+    addTuple(s"taskToGenerate(task(z$mid))")
+  }
+
   override def main(): Any = {
     k = rep(0)(_+1)
-    val taskProposal: Option[String] = solveWithMatch("task(T)", "T")
+    initialiseTasks
+    val taskProposal: Option[String] = solveWithMatch("taskToGenerate(task(X))", "X")
     val task: Option[String] = solveWithMatch("currentTask(T)", "T")
     node.put("task", task)
     val taskGenerator = mid == 8 || mid == 117
-    val taskReader = mid == 7 || mid == 8 || mid == 97
-    val doGenerateTask = taskGenerator && taskProposal.isEmpty
-    node.put("doGenerateTask", doGenerateTask)
-    val doReadTask = taskReader && task.isEmpty
-    node.put("doReadTask", doReadTask)
+    val taskStealer = mid == 7 || mid == 9 || mid == 97
+    val taskReader = false // mid % 5 == 0
+    // val doGenerateTask = taskGenerator && !taskProposal.isEmpty
+    node.put("doGenerateTask", taskProposal.isDefined /* doGenerateTask */)
+    val doReadTask = (taskStealer || taskReader) && task.isEmpty
+    node.put("doReadTask", taskReader && doReadTask)
+    node.put("doStealTask", taskStealer && doReadTask)
 
     import linda._
 
     process(taskGenerator){
-      when(doGenerateTask){ out("task(x)") }
+      when(taskProposal){ t => out(s"task($t)") }
+    }
+
+    process(taskStealer){
+      when(doReadTask) { in("task(X)") }.evolve((tuple: Tuple)  => {
+        out(s"currentTaskIn(${tuple})" @@ Me)
+      }).evolve((tuple: Tuple) => {
+        out(s"doneIn(device(${mid}),${tuple})" @@ AroundMe(30))
+      })
     }
 
     process(taskReader){
@@ -84,6 +101,7 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
     }
 
     node.put("theory", tupleSpace.getTheory.toString)
+    node.put("events", events)
   }
 
   class LindaDSL {
@@ -101,13 +119,24 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
       sspawn(tupleOperation _, if(c) Set(toid) else Set.empty, ProcArg())
     }
 
+    def when[T](gen: => Option[T])(expr: T => TupleOpId): Map[TupleOpId,OperationResult] = {
+      val toid: Option[TupleOpId] = gen.map(expr)
+      sspawn(tupleOperation _, toid.toSet, ProcArg())
+    }
+
     def out(tuple: SituatedTuple): TupleOpId = TupleOpId(s"${mid}_out")(tuple.situation match {
       case AroundMe(ext) => OutMe(tuple.tuple, mid, ext)
-      case region: Region => OutInRegion(tuple.tuple, region)
+      case region: Region => OutInRegion(tuple.tuple, mid, region)
     })
+
     def rd(tupleTemplate: SituatedTupleTemplate): TupleOpId = TupleOpId(s"${mid}_rd")(tupleTemplate.situation match {
       case Me => Read(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
       case region: Region => Read(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
+    })
+
+    def in(tupleTemplate: SituatedTupleTemplate): TupleOpId = TupleOpId(s"${mid}_in")(tupleTemplate.situation match {
+      case Me => In(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
+      case region: Region => In(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
     })
 
     implicit class RichProcessOutput(pout: Map[TupleOpId,OperationResult]) {
@@ -144,8 +173,8 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
 
     val res = toid.op match {
       case outop@OutMe(s, initiator, extension) => OutMeLogic(toid, outop, arg)
-      case outop@OutInRegion(s, region) => OutInRegionLogic(toid, outop, arg)
-      case outop@OutHere(s, position, extension) => OutInRegionLogic(toid, OutInRegion(s, CircularRegion(position, extension)), arg)
+      case outop@OutInRegion(s, initiator, region) => OutInRegionLogic(toid, outop, arg)
+      case outop@OutHere(s, initiator, position, extension) => OutInRegionLogic(toid, OutInRegion(s, initiator, CircularRegion(position, extension)), arg)
       case readop@Read(ttemplate, initiator, extension) => ReadLogic(toid, readop, arg)
       case inop@In(ttemplate, initiator, extension) => InLogic(toid, inop, arg)
       case _ => ??? // (OperationResult("invalid"), Terminated)
@@ -159,32 +188,37 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
   def OutMeLogic(toid: TupleOpId, outOp: OutMe, arg: ProcArg): (OperationResult, Status) = {
     val OutMe(s, initiator, extension) = outOp
     val g = classicGradient(initiator==mid)
-    val terminate = handleRemovalByIN(toid, initiator, s)
+    val (inRequestor, terminate) = handleRemovalByIN(toid, initiator, s, g)
     val inRegion = g<=extension
     branch(inRegion){ once{ addTupleIfNotAlreadyThere(s) } }{ None }
+    branch(terminate){ once {
+      // println(s"${mid} > OUT > remove tuple $s");
+      removeTuple(s)
+    } }{ None }
+    // if(terminate){ println(s"${mid} > OUT > terminate [$toid]") }
     (OperationResult(OperationStatus.completed, Some(s)), if(terminate) Terminated else if(inRegion) Output else External)
   }
 
-  def handleRemovalByIN(toid: TupleOpId, initiator: ID, s: Tuple): Boolean = {
-    val g = classicGradient(initiator==mid)
-
-    val processWhoDidIN = events.collectFirst {
-      case ev@TupleRemovalRequested(tid, `s`) => ev
-    }.map(_.by)
-
+  def handleRemovalByIN(toid: TupleOpId, initiator: ID, s: Tuple, g: Double): (Option[ID], Boolean) = {
+    val processWhoDidIN = keep { events.collectFirst { case ev@TupleRemovalRequested(tid, `s`) => ev }.map(_.by) }
+    // processWhoDidIN.foreach { pin => println(s"$mid > OUT > got process $pin who did IN") }
     val gotConfirmation = consensusOn(data = processWhoDidIN, leader = initiator==mid, potential = g)
-
-    processWhoDidIN.foreach(p => if(gotConfirmation) emitEvent(TupleRemovalOk(toid)))
-
+    processWhoDidIN.foreach(p => if(gotConfirmation) {
+      // println(s"$mid > OUT > got consensus on process who did IN and emitted event TupleRemovalOk")
+      emitEvent(TupleRemovalOk(toid))
+    })
     // Return whether the OUT process must terminate (i.e., we are done) or not
-    events.collectFirst { case TupleRemovalDone => true }.getOrElse(false)
+    val gotAck = events.collectFirst { case TupleRemovalDone => true }.getOrElse(false)
+    // if(gotAck){ println(s"$mid > OUT > got ACK from process who did IN") }
+    (processWhoDidIN.map(_.op.initiator), gotAck)
   }
 
   def OutInRegionLogic(toid: TupleOpId, outOp: OutInRegion, arg: ProcArg): (OperationResult, Status) = {
-    val OutInRegion(s, region) = outOp
+    val OutInRegion(s, initiator, region) = outOp
     val pos = currentPosition()
     val inRegion = region.withinRegion(Point2D(pos.x, pos.y))
     branch(inRegion){ once{ addTupleIfNotAlreadyThere(s) } }{ None }
+    /* branch(terminate){ once { removeTuple(s) } }{ None } */
     (OperationResult(OperationStatus.completed, Some(s)), if(inRegion) Output else External)
   }
 
@@ -193,13 +227,14 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
     val Read(ttemplate, initiator, extension) = readOp
 
     val g = classicGradient(initiator==mid)
-    node.put(s"${toid.uid}_g", g)
+    // node.put(s"${toid.uid}_g", g)
     val tupleFound = solveFirst(ttemplate) // localTupleMatching(localTuples, ttemplate)
     val result  = broadcastUnbounded[Option[TupleSolution]](!tupleFound.isEmpty, tupleFound)
     val (gotIt,canClose) = rep((false,false))(f => {
       val shouldBeDone = mid==initiator && !result.isEmpty
       (shouldBeDone, f._2 || (shouldBeDone && f._1))
     })
+    result.foreach(sol => addTupleIfNotAlreadyThere(sol.solution))
     (OperationResult(if(result.isDefined) OperationStatus.completed else OperationStatus.inProgress, result.map(_.solution)), if(mid==initiator){
       if(canClose){ Terminated } else if(gotIt) { Output } else { Bubble }
     } else if(g<extension) { Bubble } else { External })
@@ -208,35 +243,29 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
   def InLogic(toid: TupleOpId, inOp: In, arg: ProcArg): (OperationResult, Status) = {
     val ProcArg(localTuples, localProcs) = arg
     val In(ttemplate, initiator, extension) = inOp
-    // Note: IN is not trivial:
-    // - Need consensus on the tuple to remove
-    // - As there might be multiple concurrent INs, these must be discriminated by a tuple's owner
+    // Note: IN is not trivial: Need consensus on the tuple to remove; As there might be multiple concurrent INs, these must be discriminated by a tuple's owner
     // So, it needs 2 feedback loops for 4 flows of events:
-    // 1) TupleRemovalRequested(by,tuple)
-    // 2) TupleRemovalOk(by)
-    // 3) TupleRemovalDone
-    // 4) TupleRemovalEnd
+    // 1) TupleRemovalRequested(by,tuple) -- 2) TupleRemovalOk(by) -- 3) TupleRemovalDone -- 4) TupleRemovalEnd
     val g = classicGradient(initiator==mid)
-
     val tupleFound = solveFirst(ttemplate)
     val myTupleChosen = consensusOn(tupleFound, initiator==mid, g)
-
     if(myTupleChosen){
       // Once the device who found the tuple sees that its tuple is the chosen one, it must get confirmation by tuple's owner
       // Tuple removal must affect Out processes
-      emitEvent(TupleRemovalRequested(toid, tupleFound.get.toString))
+      // println(s"$mid > IN > my tuple was chosen: emitting event TupleRemovalRequested")
+      emitEvent(TupleRemovalRequested(toid, tupleFound.get.solution))
     }
-
     val outProcess = events.collectFirst[TupleOpId]{ case TupleRemovalOk(by) => by }
     val gotAck = !outProcess.isEmpty
+    // if(gotAck){ println(s"$mid > IN > got ack for retrieval: TupleRemovalOk(by ${outProcess.get})") }
     val canRetrieveTheTuple = broadcastUnbounded(gotAck, gotAck)
-
     val result  = broadcastUnbounded[Option[String]](myTupleChosen && canRetrieveTheTuple, tupleFound.map(_.solution))
-
     val didRead = broadcastUnbounded(mid==initiator, mid==initiator && !result.isEmpty)
-    if(myTupleChosen && didRead){ emitEvent(TupleRemovalDone) }
+    if(myTupleChosen && didRead){
+      // println(s"$mid > IN > the initiator did read the tuple: emitting TupleRemovalDone");
+      emitEvent(TupleRemovalDone)
+    }
     val done = broadcastUnbounded(myTupleChosen && didRead, (myTupleChosen && didRead) && localProcs.forall(lp => outProcess.map(_!=lp).getOrElse(true)))
-
     // IN bubble closing similar to read
     val (gotIt,canClose) = rep((false,false))(f => {
       val shouldBeDone = mid==initiator && !result.isEmpty && done
@@ -257,6 +286,7 @@ class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors wit
   // TODO: add to stdlib
   def once[T](expr: => T): Option[T] = rep((true,none[T])){ case (first,value) => (false, if(first) Some(expr)  else None) }._2
   def none[T]: Option[T] = None
+  def keep[T](expr: => Option[T]): Option[T] = rep[Option[T]](None){ _.orElse(expr) }
 }
 
 

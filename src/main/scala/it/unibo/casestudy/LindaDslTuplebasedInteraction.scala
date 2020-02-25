@@ -32,7 +32,9 @@ object LindaDslTuplebasedInteractionTupleSupport {
   case class Read(template: TupleTemplate, val initiator: ID, val extension: Double = Double.PositiveInfinity) extends TupleOp
   case class In(template: TupleTemplate, val initiator: ID, val extension: Double = Double.PositiveInfinity) extends TupleOp
 
-  case class TupleOpId(uid: String)(val op: TupleOp)
+  case class TupleOpId(uid: String)(val op: TupleOp) {
+    override def toString: Tuple = uid
+  }
   trait OperationStatus
   object OperationStatus {
     val inProgress: OperationStatus = new OperationStatus { }
@@ -221,40 +223,70 @@ class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace wit
       case _ => ??? // (OperationResult("invalid"), Terminated)
     }
 
-    node.put(toid.uid+"_op", toid.op)
-    node.put(toid.uid+"_status", if(res._2==Output) 2 else if(res._2==Bubble) 1 else if(res._2==Terminated) 3 else 0)
+    val status = res._2
+    node.put(toid.uid+"_op", toid.op + s"{$k}")
+    node.put(toid.uid+"_status", (if(status==Output) 2 else if(status==Bubble) 1 else if(status==Terminated) 3 else 0)+s" {$k}")
     // println(s"[$mid] $toid -> $res")
     res
   }
 
+  override def sspawn[A, B, C](process: A => B => (C, Status), params: Set[A], args: B): Map[A,C] = {
+    spawn[A,B,Option[C]]((p: A) => (a: B) => {
+      val (finished, result, status) = rep((false, none[C], false)) { case (finished, _, _) => {
+        val (result, status) = process(p)(a)
+        val newFinished = status == Terminated | includingSelf.anyHood(nbr{finished})
+        val terminated = includingSelf.everyHood(nbr{newFinished})
+        val (newResult, newStatus) = (result, status) match {
+          case _ if terminated     => (None, false)
+          case (_,     External)   => (None, false)
+          case (_,     Terminated) => (None, true)
+          case (value, Output)     => (Some(value), true)
+          case (_,     Bubble)     => (None, true)
+        }
+        (newFinished, newResult, newStatus)
+      } }
+      val exitTuple = s"""exit("${p}")"""
+      if(!status){ addTupleIfNotAlreadyThere(exitTuple) } else { removeTuple(exitTuple) }
+      (result, status)
+    }, params, args).collect { case (k, Some(p)) => k -> p }
+  }
+
+
   def OutMeLogic(toid: TupleOpId, outOp: OutMe, arg: ProcArg): (OperationResult, Status) = {
     val OutMe(s, initiator, extension) = outOp
     val g = classicGradient(initiator==mid)
-    val terminate = handleRemovalByIN(toid, initiator, s, g)
     val inRegion = g<=extension
+
+    val terminate = branch(inRegion){ handleRemovalByIN(toid, initiator, s, g) }{ false }
     branch(inRegion){ once{ addTupleIfNotAlreadyThere(s) } }{ None }
     branch(terminate){ once {
       // println(s"${mid} > OUT > remove tuple $s");
       removeTuple(s)
     } }{ None }
-    if(terminate){ println(s"${mid} > OUT $s > terminate [$toid]") }
+    if(terminate){ println(s"${mid} > OUT $s > terminate [$toid] {$k}") }
     (OperationResult(OperationStatus.completed, Some(s)), if(terminate) Terminated else if(inRegion) Output else External)
   }
 
   def handleRemovalByIN(toid: TupleOpId, initiator: ID, s: Tuple, g: Double): Boolean = {
     val leader = initiator==mid
-    val processWhoDidIN: Map[String,String] = solveWithMatches(TupleRemovalRequested.matchTemplate).mapValues(_.stripQuotes) //keep { events.collectFirst { case ev@TupleRemovalRequested(tid, `s`) => ev }.map(_.by) }
-    val retriever: Option[String] = processWhoDidIN.get(TupleRemovalRequested.By)
+    val processWhoDidIN: List[Map[String,String]] = solutionsWithMatches(TupleRemovalRequested.matchTemplate).map(_.mapValues(_.stripQuotes)).filter( retrieverMap => {
+      val pid = retrieverMap(TupleRemovalRequested.By).stripQuotes
+      val exited = exists(s"""exit("$pid")""")
+      if(exited) removeTuple(TupleRemovalRequested.matchingTemplate(pid.quoted,retrieverMap(TupleRemovalRequested.Template)))
+      !exited
+    })
+    val retrieverData: Option[Map[String,String]] = keepUnless[Map[String,String]](processWhoDidIN.headOption, r => !processWhoDidIN.exists(_.get(TupleRemovalRequested.By)==r))
+    val retriever = retrieverData.flatMap(_.get(TupleRemovalRequested.By))
+    val template: Option[TupleTemplate] = retrieverData.flatMap(_.get(TupleRemovalRequested.Template))
     val chosenRetriever: Option[String] = consensus(data = retriever, leader = leader, potential = g)
-    chosenRetriever.foreach(r => println(s"$mid > OUT > $s > consensus on retriever: $r"))
-    val template: Option[TupleTemplate] = branch(leader){ processWhoDidIN.get(TupleRemovalRequested.Template) }{ None }
+    chosenRetriever.foreach(r => println(s"$mid > OUT > $s > consensus on retriever: $r {$k}"))
     val chosenTuple: Option[Tuple] = template.flatMap(tt => if(new Prolog().`match`(Term.createTerm(s), Term.createTerm(tt))) Some(s) else None)
     chosenRetriever.foreach(r => if(chosenTuple.isDefined){
-      println(s"$mid > OUT > $s > chosen tuple $chosenTuple for retriever $r")
+      println(s"$mid > OUT > $s > chosen tuple $chosenTuple for retriever $r {$k}")
       emitEvent(toid, TupleRemovalOk(toid.uid, r, chosenTuple.get))
     })
     val inProcessDone: Map[String,String] = solveWithMatches(TupleRemovalDone.matchingTemplate(TupleRemovalDone.By,toid.uid.quoted)).mapValues(_.stripQuotes)
-    val inProcessDoneBy = inProcessDone.get(TupleRemovalDone.By)
+    // val inProcessDoneBy = inProcessDone.get(TupleRemovalDone.By)
     !inProcessDone.isEmpty
   }
 
@@ -296,50 +328,50 @@ class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace wit
     object InPhase {
       case object InPhaseStart extends InPhase
       val Start: InPhase = InPhaseStart
+      case object InPhaseReading extends InPhase
+      val Reading: InPhase = InPhaseReading
+      case object InPhaseDone extends InPhase
+      val Done: InPhase = InPhaseDone
     }
     import InPhase._
 
-    rep(Start)(phase => {
-      val inRequestToOut = TupleRemovalRequested(toid.uid, ttemplate)
-      if(phase == Start){ emitEvent(toid, inRequestToOut) } //else { retractEvent(inRequestToOut) }
-      phase
-    })
+    val (phase,result) = rep[(InPhase,Option[Tuple])]((Start,None)){ case (p,_) => {
+      var phase = p
+      if (phase == Start) {
+        emitEvent(toid, TupleRemovalRequested(toid.uid, ttemplate))
+      } //else { retractEvent(inRequestToOut) }
+      val tupleToRemove: Map[String, String] = solveWithMatches(TupleRemovalOk.matchTemplate).mapValues(_.stripQuotes)
+      val by = tupleToRemove.get(TupleRemovalOk.By)
+      val to = tupleToRemove.get(TupleRemovalOk.To)
+      val tuple = if (to.map(_ == toid.uid).getOrElse(false)) tupleToRemove.get(TupleRemovalOk.Tuple) else None // get tuple only if this process is the one chosen by the OUT
+      if (!tupleToRemove.isEmpty) {
+        println(s"${mid} > IN > as ${toid.uid}, I can remove tuple $tuple from $by {$k}")
+      }
+      val result = broadcastUnbounded[Option[Tuple]](tuple.isDefined, tuple)
+      if (result.isDefined) phase = Reading
 
-    val tupleToRemove: Map[String,String] =  solveWithMatches(TupleRemovalOk.matchingTemplate(TupleRemovalOk.By,toid.uid.quoted,TupleRemovalOk.Tuple)).mapValues(_.stripQuotes)
-    val by = tupleToRemove.get(TupleRemovalOk.By)
-    val tuple = tupleToRemove.get(TupleRemovalOk.Tuple)
-    if(!tupleToRemove.isEmpty){
-      println(s"${mid} > IN > as ${toid.uid}, I can remove tuple $tuple from $by ")
-    }
+      if (mid == initiator && result.isDefined) addTupleIfNotAlreadyThere(result.get)
+      val didRead = broadcastUnbounded(mid == initiator, mid == initiator && !result.isEmpty)
+      val intermediaryGotAckFromReader = keep {
+        tuple.isDefined && didRead && by.isDefined
+      }
+      if (intermediaryGotAckFromReader) {
+        println(s"$mid > IN > the initiator $initiator did read the tuple $tuple: emitting TupleRemovalDone [$toid] {$k}");
+        emitEvent(toid, TupleRemovalDone(toid.uid, by.get))
+      }
+      val ensureOutTermination = true // && localProcs.forall(lp => outProcess.map(_!=lp).getOrElse(true)))
+      val done = broadcastUnbounded(intermediaryGotAckFromReader, intermediaryGotAckFromReader && ensureOutTermination)
+      if (done) phase = Done
+      (phase, result)
+    }}
+    node.put(s"${toid}_phase", phase + s" {$k}")
+    node.put(s"${toid}_done", (phase==Done) + s" {$k}")
 
-    // val canRetrieveTheTuple = broadcastUnbounded(intermediaryGotAckFromOut, intermediaryGotAckFromOut)
-    val result  = broadcastUnbounded[Option[String]](tuple.isDefined, tuple)
-    if(mid==initiator && result.isDefined) addTupleIfNotAlreadyThere(result.get)
-    val didRead = broadcastUnbounded(mid==initiator, mid==initiator && !result.isEmpty)
-    val intermediaryGotAckFromReader = keep { tuple.isDefined && didRead && by.isDefined  }
-    if(intermediaryGotAckFromReader){
-      println(s"$mid > IN > the initiator $initiator did read the tuple $tuple: emitting TupleRemovalDone [$toid]");
-      emitEvent(toid, TupleRemovalDone(toid.uid, by.get))
-    }
-    val ensureOutTermination = true // && localProcs.forall(lp => outProcess.map(_!=lp).getOrElse(true)))
-    val done = broadcastUnbounded(intermediaryGotAckFromReader, intermediaryGotAckFromReader && ensureOutTermination)
-    node.put(s"${toid}_done", done)
-    // IN bubble closing similar to read
-    val (gotIt,canClose) = rep((false,false))(f => {
-      val shouldBeDone = mid==initiator && !result.isEmpty && done
-      (shouldBeDone, f._2 || (shouldBeDone && f._1))
-    })
-    /*
-    if(canClose){
-      println(s"$mid > IN > $result -- can close!!!!  [$toid]")
-      addTupleIfNotAlreadyThere(result.get)
-    }
-     */
     (OperationResult(if(result.isDefined) OperationStatus.completed else OperationStatus.inProgress, result), if(mid==initiator){
-      if(canClose) {
+      if(phase==Done) {
         clearEvents(toid)
         Terminated
-      } else if(gotIt) Output else Bubble
+      } else Output // if(mid==initiator) Output else Bubble
     } else if(g<extension) Bubble else External)
   }
 
@@ -360,9 +392,14 @@ class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace wit
   // TODO: add to stdlib
   def once[T](expr: => T): Option[T] = rep((true,none[T])){ case (first,value) => (false, if(first) Some(expr)  else None) }._2
   def none[T]: Option[T] = None
-  def keep[T](expr: => Option[T]): Option[T] = rep[Option[T]](None){ _.orElse(expr) }
-  def keep(expr: => Boolean): Boolean = rep(false)(b => if(b) b else expr)
+  def keep[T](expr: Option[T]): Option[T] = rep[Option[T]](None){ _.orElse(expr) }
+  def keepUnless[T](expr: Option[T], reset: T=>Boolean): Option[T] = rep[Option[T]](None){ old => if(old.map(reset).getOrElse(false)) {
+    print("#")
+    None
+  } else old.orElse(expr) }
+  def keep(expr: Boolean): Boolean = rep(false)(b => if(b) b else expr)
   def unchanged[T](value: T): Boolean = rep(value,true)( v => (value,value==v._1))._2
+  def delay[T](value: T, default: T): T = rep((default,default)){ case (old,_) => (value,old) }._2
 
   implicit class MyRichStr(s: String){
     def stripQuotes = s.stripPrefix("'").stripSuffix("'")

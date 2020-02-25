@@ -45,6 +45,11 @@ trait TupleSpace {
     solution.map(s => Map(SOLUTION->s.solution) ++ s.bindings).getOrElse(Map.empty)
   }
 
+  def solutionsWithMatches(goal: String): List[Map[String,String]] = {
+    val solution = solve(goal)
+    solution.map(s => Map(SOLUTION->s.solution) ++ s.bindings)
+  }
+
   def solveFirst(goal: String): Option[TupleSolution] = {
     val solveInfo = tupleSpace.solve(goal)
     if(solveInfo.isSuccess){
@@ -58,7 +63,7 @@ trait TupleSpace {
   def solve(goal: String): List[TupleSolution] = {
     var solveInfo = tupleSpace.solve(goal)
     var result: List[TupleSolution] = List.empty
-    while(solveInfo != null){
+    while(solveInfo != null && solveInfo.isSuccess){
       val vars = solveInfo.getBindingVars.asScala.map(_.getName)
       result = TupleSolution(solveInfo.getSolution.toString, vars.map(varName => varName -> solveInfo.getVarValue(varName).toString).toMap) :: result
       if(solveInfo.hasOpenAlternatives) {

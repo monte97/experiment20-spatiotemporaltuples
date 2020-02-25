@@ -19,6 +19,7 @@ object TupleSupport extends App with TupleSpace {
 
 trait TupleSpace {
   val tupleSpace = new Prolog("")
+  val SOLUTION = "__solution__"
 
   def addTupleIfNotAlreadyThere(clause: String) = {
     if(!exists(clause)){
@@ -37,6 +38,11 @@ trait TupleSpace {
 
   def solveWithMatch(goal: String, variable: String): Option[String] = {
     solveFirst(goal).flatMap(_.bindings.get(variable))
+  }
+
+  def solveWithMatches(goal: String): Map[String,String] = {
+    val solution = solveFirst(goal)
+    solution.map(s => Map(SOLUTION->s.solution) ++ s.bindings).getOrElse(Map.empty)
   }
 
   def solveFirst(goal: String): Option[TupleSolution] = {

@@ -8,7 +8,7 @@ import it.unibo.scafi.space.{Point2D, Point3D}
 import scala.collection.JavaConverters._
 
 
-object LindaTupleSupport {
+object LindaDslTupleSupport {
   type Tuple = String
   type TupleTemplate = String
 
@@ -48,9 +48,9 @@ object LindaTupleSupport {
   case class TupleRemovalDone(tuple: Tuple) extends ProcessEvent
 }
 
-class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors with ScafiAlchemistSupport with AlchemistLocationFix
+class LindaDsl extends AggregateProgram with TupleSpace with StandardSensors with ScafiAlchemistSupport with AlchemistLocationFix
   with Gradients with BlockG with FieldCalculusSyntax with FieldUtils with CustomSpawn with BlockS with BlockC {
-  import LindaTupleSupport._
+  import LindaDslTupleSupport._
 
   var events: Set[ProcessEvent] = Set()
   var k = 0

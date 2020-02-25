@@ -36,7 +36,7 @@ pools:
         type: Event
         actions:
           - type: RunScafiProgram
-            parameters: [it.unibo.casestudy.LindaDSL, 5.0] # second argument is retention time
+            parameters: [it.unibo.casestudy.LindaDslTuplebasedInteraction, 5.0] # second argument is retention time
       - program: send
   - pool: &move
       - time-distribution: *moveFrequency

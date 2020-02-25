@@ -8,7 +8,7 @@ import it.unibo.scafi.space.{Point2D, Point3D}
 import scala.collection.JavaConverters._
 
 
-object LindaTupleSupport {
+object LindaDslTuplebasedInteractionTupleSupport {
   type Tuple = String
   type TupleTemplate = String
 
@@ -79,9 +79,9 @@ object LindaTupleSupport {
   }
 }
 
-class LindaDSL extends AggregateProgram with TupleSpace with StandardSensors with ScafiAlchemistSupport with AlchemistLocationFix
+class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace with StandardSensors with ScafiAlchemistSupport with AlchemistLocationFix
   with Gradients with BlockG with FieldCalculusSyntax with FieldUtils with CustomSpawn with BlockS with BlockC {
-  import LindaTupleSupport._
+  import LindaDslTuplebasedInteractionTupleSupport._
 
   var k = 0
 

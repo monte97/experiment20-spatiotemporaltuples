@@ -207,7 +207,7 @@ class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace wit
 
   def consensus[T](data: Option[T], leader: Boolean, potential: Double): Option[T] = {
     val collect = C[Double,Set[T]](potential, _++_, data.toSet, Set.empty)
-    val choice = rep[Option[T]](None){ v => v.orElse(collect.headOption) }
+    val choice = rep[Option[T]](None){ v => v.filter(collect.contains(_)).orElse(collect.headOption) }
     broadcastUnbounded(leader && !choice.isEmpty, choice)
   }
 
@@ -263,31 +263,65 @@ class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace wit
       // println(s"${mid} > OUT > remove tuple $s");
       removeTuple(s)
     } }{ None }
-    if(terminate){ println(s"${mid} > OUT $s > terminate [$toid] {$k}") }
+    if(terminate){ println(s"${toid.uid} > ${mid} > OUT $s > terminate [$toid] {$k}") }
     (OperationResult(OperationStatus.completed, Some(s)), if(terminate) Terminated else if(inRegion) Output else External)
   }
 
   def handleRemovalByIN(toid: TupleOpId, initiator: ID, s: Tuple, g: Double): Boolean = {
-    val leader = initiator==mid
-    val processWhoDidIN: List[Map[String,String]] = solutionsWithMatches(TupleRemovalRequested.matchTemplate).map(_.mapValues(_.stripQuotes)).filter( retrieverMap => {
-      val pid = retrieverMap(TupleRemovalRequested.By).stripQuotes
-      val exited = exists(s"""exit("$pid")""")
-      if(exited) removeTuple(TupleRemovalRequested.matchingTemplate(pid.quoted,retrieverMap(TupleRemovalRequested.Template)))
-      !exited
-    })
-    val retrieverData: Option[Map[String,String]] = keepUnless[Map[String,String]](processWhoDidIN.headOption, r => !processWhoDidIN.exists(_.get(TupleRemovalRequested.By)==r))
-    val retriever = retrieverData.flatMap(_.get(TupleRemovalRequested.By))
-    val template: Option[TupleTemplate] = retrieverData.flatMap(_.get(TupleRemovalRequested.Template))
-    val chosenRetriever: Option[String] = consensus(data = retriever, leader = leader, potential = g)
-    chosenRetriever.foreach(r => println(s"$mid > OUT > $s > consensus on retriever: $r {$k}"))
-    val chosenTuple: Option[Tuple] = template.flatMap(tt => if(new Prolog().`match`(Term.createTerm(s), Term.createTerm(tt))) Some(s) else None)
-    chosenRetriever.foreach(r => if(chosenTuple.isDefined){
-      println(s"$mid > OUT > $s > chosen tuple $chosenTuple for retriever $r {$k}")
-      emitEvent(toid, TupleRemovalOk(toid.uid, r, chosenTuple.get))
-    })
-    val inProcessDone: Map[String,String] = solveWithMatches(TupleRemovalDone.matchingTemplate(TupleRemovalDone.By,toid.uid.quoted)).mapValues(_.stripQuotes)
-    // val inProcessDoneBy = inProcessDone.get(TupleRemovalDone.By)
-    !inProcessDone.isEmpty
+    object OutPhase extends Enumeration {
+      type OutPhase = Value
+      val NORMAL, SERVING, CLOSING = Value
+    }
+    import OutPhase._
+
+    rep(NORMAL)(p => {
+      var phase = p
+      val leader = initiator==mid
+      branch(phase!=CLOSING) {
+        var processesWhoDidIN: List[Map[String, String]] = solutionsWithMatches(TupleRemovalRequested.matchTemplate).map(_.mapValues(_.stripQuotes))
+        println(s"${toid.uid} > ${mid} > OUT > $processesWhoDidIN asked for tuple $s")
+        processesWhoDidIN = processesWhoDidIN.filter(retrieverMap => {
+          val pid = retrieverMap(TupleRemovalRequested.By).stripQuotes
+          val template = retrieverMap(TupleRemovalRequested.Template).stripQuotes
+          val forThisTuple = new Prolog().`match`(Term.createTerm(s), Term.createTerm(template))
+          val exited = exists(s"""exit(${pid.quoted})""")
+          if (exited) removeTuple(TupleRemovalRequested.matchingTemplate(pid.quoted, template.quoted))
+          !exited && forThisTuple
+        })
+        // println(s"${toid.uid} > ${mid} > OUT > choosing the first of filtered $processesWhoDidIN")
+        val retrieverData: Option[Map[String, String]] =  processesWhoDidIN.headOption // keepUnless[Map[String, String]](processesWhoDidIN.headOption, r => !processesWhoDidIN.exists(_.get(TupleRemovalRequested.By) == r))
+        val retriever = retrieverData.flatMap(_.get(TupleRemovalRequested.By))
+        val template: Option[TupleTemplate] = retrieverData.flatMap(_.get(TupleRemovalRequested.Template))
+        val chosenRetriever: Option[String] = consensus(data = retriever, leader = leader, potential = g)
+        chosenRetriever.foreach(r => println(s"${toid.uid} > $mid > OUT > $s > consensus on retriever: $r {$k}"))
+        val supposedRetriever = chosenRetriever.getOrElse("").quoted
+        if (leader) {
+          val alreadyGivenTo: Option[String] = solveWithMatch(s"alreadyGiven(${toid.uid.quoted},By)", "By").map(_.stripQuotes)
+          val exited = alreadyGivenTo.map(pid => exists(s"""exit(${pid.quoted})""")).getOrElse(false)
+          if(exited){
+            val markToRemove = s"alreadyGiven(${toid.uid.quoted},${alreadyGivenTo.get.quoted})"
+            removeTuple(markToRemove)
+            val eventToRemove = TupleRemovalOk(toid.uid, alreadyGivenTo.get, s)
+            retractEvent(toid, eventToRemove)
+            println(s"${toid.uid} > $mid > OUT > however $alreadyGivenTo exited!!!! {$k}\nRemoving ${markToRemove} and event ${eventToRemove}")
+          }
+          val alreadyGiven = alreadyGivenTo.isDefined && !exited
+          if(alreadyGiven){ println(s"${toid.uid} > $mid > OUT > $s was already given to $alreadyGivenTo {$k}") }
+          chosenRetriever.foreach(r => if (!alreadyGiven) {
+            addTuple(s"alreadyGiven(${toid.uid.quoted},${supposedRetriever})")
+            println(s"${toid.uid} > $mid > OUT > $s > giving tuple $s to retriever $r {$k}")
+            emitEvent(toid, TupleRemovalOk(toid.uid, r, s))
+          })
+        }
+        val inProcessDone: Map[String, String] = solveWithMatches(TupleRemovalDone.matchingTemplate(TupleRemovalDone.By, toid.uid.quoted)).mapValues(_.stripQuotes)
+        // val inProcessDoneBy = inProcessDone.get(TupleRemovalDone.By)
+        if (!inProcessDone.isEmpty) {
+          println(s"${toid.uid} > $mid > OUT > $s > closing since got $inProcessDone {$k}")
+          phase = CLOSING
+        }
+        phase
+      }{ p }
+    }) == CLOSING
   }
 
   def OutInRegionLogic(toid: TupleOpId, outOp: OutInRegion, arg: ProcArg): (OperationResult, Status) = {
@@ -335,34 +369,30 @@ class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace wit
     }
     import InPhase._
 
-    val (phase,result) = rep[(InPhase,Option[Tuple])]((Start,None)){ case (p,_) => {
+    val (phase,by,result) = rep[(InPhase,Option[String],Option[Tuple])]((Start,None,None)){ case (p,outProc,theTuple) => {
       var phase = p
       if (phase == Start) {
         emitEvent(toid, TupleRemovalRequested(toid.uid, ttemplate))
       } //else { retractEvent(inRequestToOut) }
-      val tupleToRemove: Map[String, String] = solveWithMatches(TupleRemovalOk.matchTemplate).mapValues(_.stripQuotes)
-      val by = tupleToRemove.get(TupleRemovalOk.By)
-      val to = tupleToRemove.get(TupleRemovalOk.To)
-      val tuple = if (to.map(_ == toid.uid).getOrElse(false)) tupleToRemove.get(TupleRemovalOk.Tuple) else None // get tuple only if this process is the one chosen by the OUT
-      if (!tupleToRemove.isEmpty) {
-        println(s"${mid} > IN > as ${toid.uid}, I can remove tuple $tuple from $by {$k}")
-      }
-      val result = broadcastUnbounded[Option[Tuple]](tuple.isDefined, tuple)
+      val tupleToRemove: Map[String, String] = solveWithMatches(TupleRemovalOk.matchingTemplate(TupleRemovalOk.By,toid.uid.quoted,TupleRemovalOk.Tuple)).mapValues(_.stripQuotes)
+      val by = outProc.orElse(tupleToRemove.get(TupleRemovalOk.By))
+      val tuple = theTuple.orElse(tupleToRemove.get(TupleRemovalOk.Tuple)) // get tuple only if this process is the one chosen by the OUT
+      tuple.foreach(tuple => println(s"${toid.uid} > ${mid} > IN > I can remove tuple $tuple from $by {$k}"))
+      val result = consensus[(String,Tuple)]((by,tuple).insideOut, mid==initiator, g)
+      result.foreach { r => println(s"${toid.uid} > ${mid} > IN > consensus on removing tuple ${r._1} from ${r._2} {$k}") }
       if (result.isDefined) phase = Reading
 
-      if (mid == initiator && result.isDefined) addTupleIfNotAlreadyThere(result.get)
-      val didRead = broadcastUnbounded(mid == initiator, mid == initiator && !result.isEmpty)
-      val intermediaryGotAckFromReader = keep {
-        tuple.isDefined && didRead && by.isDefined
-      }
+      if (mid == initiator && result.isDefined) addTupleIfNotAlreadyThere(result.get._2)
+      val didRead: Option[(String,Tuple)] = broadcastUnbounded(mid == initiator, result)
+      val intermediaryGotAckFromReader = (for(intermediaryOutProc <- by; (chosenOutProc,_) <- didRead) yield intermediaryOutProc==chosenOutProc).getOrElse(false)
       if (intermediaryGotAckFromReader) {
-        println(s"$mid > IN > the initiator $initiator did read the tuple $tuple: emitting TupleRemovalDone [$toid] {$k}");
-        emitEvent(toid, TupleRemovalDone(toid.uid, by.get))
+        println(s"${toid.uid} > $mid > IN > the initiator $initiator did read the tuple $tuple: emitting TupleRemovalDone {$k}");
+        emitEvent(toid, TupleRemovalDone(toid.uid, didRead.get._1))
       }
       val ensureOutTermination = true // && localProcs.forall(lp => outProcess.map(_!=lp).getOrElse(true)))
       val done = broadcastUnbounded(intermediaryGotAckFromReader, intermediaryGotAckFromReader && ensureOutTermination)
       if (done) phase = Done
-      (phase, result)
+      (phase, by, result.map(_._2))
     }}
     node.put(s"${toid}_phase", phase + s" {$k}")
     node.put(s"${toid}_done", (phase==Done) + s" {$k}")
@@ -404,6 +434,10 @@ class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace wit
   implicit class MyRichStr(s: String){
     def stripQuotes = s.stripPrefix("'").stripSuffix("'")
     def quoted = s"'$s'"
+  }
+
+  implicit class Tuple2Opt[A,B](t: (Option[A],Option[B])){
+    def insideOut: Option[(A,B)] = for(a <- t._1; b <- t._2) yield (a,b)
   }
 }
 

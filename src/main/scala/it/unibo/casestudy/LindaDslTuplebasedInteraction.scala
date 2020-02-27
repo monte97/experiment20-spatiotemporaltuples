@@ -160,16 +160,19 @@ class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace wit
     def out(tuple: SituatedTuple): TupleOpId = TupleOpId(s"${mid}_out_${tuple.hashCode()}")(tuple.situation match {
       case SpatiotemporalSituation(AroundMe(ext),_) => OutMe(tuple.tuple, mid, ext)
       case SpatiotemporalSituation(region: Region,_) => OutInRegion(tuple.tuple, mid, region)
+      case _ => ???
     })
 
     def rd(tupleTemplate: SituatedTupleTemplate): TupleOpId = TupleOpId(s"${mid}_rd_${tupleTemplate.hashCode()}")(tupleTemplate.situation match {
       case SpatiotemporalSituation(AroundMe(ext),_) => Read(tupleTemplate.tupleTemplate, mid, extension = ext)
       case SpatiotemporalSituation(region: Region,_) => Read(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
+      case _ => ???
     })
 
     def in(tupleTemplate: SituatedTupleTemplate): TupleOpId = TupleOpId(s"${mid}_in_${tupleTemplate.hashCode()}")(tupleTemplate.situation match {
       case SpatiotemporalSituation(AroundMe(ext),_) => In(tupleTemplate.tupleTemplate, mid, extension = ext)
       case SpatiotemporalSituation(region: Region,_) => In(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
+      case _ => ???
     })
 
     implicit class RichProcessOutput(pout: Map[TupleOpId,OperationResult]) {

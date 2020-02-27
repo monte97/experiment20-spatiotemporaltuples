@@ -1,0 +1,71 @@
+variables:
+  random: &random
+    min: 0
+    max: 1
+    step: 1
+    default: 0
+  range: &range
+    formula: 15
+    language: js
+  moveFrequency: &moveFrequency
+    formula: 1/20
+    language: js
+
+export:
+  - time
+  - molecule: outs_n
+    aggregators: [sum]
+    value-filter: FilterNaN
+  - molecule: outs_closed_n
+    aggregators: [sum]
+    value-filter: FilterNaN
+  - molecule: ins_n
+    aggregators: [sum]
+    value-filter: FilterNaN
+  - molecule: ins_unblocked_n
+    aggregators: [sum]
+    value-filter: FilterNaN
+
+seeds:
+  scenario: *random
+  simulation: *random
+
+incarnation: scafi
+
+environment:
+  type: Continuous2DEnvironment
+  parameters: []
+
+network-model:
+  type: ConnectWithinDistance #*connectionType
+  parameters: [*range]
+
+pools:
+  - pool: &program
+      - time-distribution: 1
+        type: Event
+        actions:
+          - type: RunScafiProgram
+            parameters: [it.unibo.casestudy.Correctness, 5.0] # second argument is retention time
+      - program: send
+  - pool: &move
+      - time-distribution: *moveFrequency
+        type: Event
+        actions: []
+
+displacements:
+  - in:
+      type: Grid
+      parameters: [0, 0, 200, 80, 10, 10, 1, 1]
+    programs:
+      - *move
+      - *program
+    contents:
+      - molecule: outs_n
+        concentration: 0
+      - molecule: outs_closed_n
+        concentration: 0
+      - molecule: ins_n
+        concentration: 0
+      - molecule: ins_unblocked_n
+        concentration: 0

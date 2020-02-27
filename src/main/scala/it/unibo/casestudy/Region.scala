@@ -7,6 +7,7 @@ trait Situation
 
 case class AroundMe(extension: Double) extends Situation
 object Me extends AroundMe(0)
+object Everywhere extends AroundMe(Double.PositiveInfinity)
 
 trait Region extends Situation {
   def withinRegion(p: Point2D): Boolean

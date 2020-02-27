@@ -3,13 +3,23 @@ package it.unibo.casestudy
 import it.unibo.alchemist.model.scafi.ScafiIncarnationForAlchemist._
 import it.unibo.scafi.space.{Point2D, Point3D}
 
-trait Situation
+trait SpatialSituation
+object SpatialSituation {
+  implicit def situateTemporally(s: SpatialSituation): SpatiotemporalSituation =
+    SpatiotemporalSituation(s, Forever)
+}
 
-case class AroundMe(extension: Double) extends Situation
+case class AroundMe(extension: Double) extends SpatialSituation
 object Me extends AroundMe(0)
 object Everywhere extends AroundMe(Double.PositiveInfinity)
 
-trait Region extends Situation {
+trait TemporalSituation
+case object Forever extends TemporalSituation
+
+case class SpatiotemporalSituation(spatialSituation: SpatialSituation,
+                                   temporalSituation: TemporalSituation)
+
+trait Region extends SpatialSituation {
   def withinRegion(p: Point2D): Boolean
 }
 

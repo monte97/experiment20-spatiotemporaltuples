@@ -12,8 +12,8 @@ object LindaDslTuplebasedInteractionTupleSupport {
   type Tuple = String
   type TupleTemplate = String
 
-  case class SituatedTuple(tuple: Tuple, situation: Situation)
-  case class SituatedTupleTemplate(tupleTemplate: TupleTemplate, situation: Situation)
+  case class SituatedTuple(tuple: Tuple, situation: SpatiotemporalSituation)
+  case class SituatedTupleTemplate(tupleTemplate: TupleTemplate, situation: SpatiotemporalSituation)
 
   implicit def situateTuple(tuple: Tuple) = SituatedTuple(tuple, Me)
   implicit def situateTupleTemplate(tupleTemplate: TupleTemplate) = SituatedTupleTemplate(tupleTemplate, Me)
@@ -158,18 +158,18 @@ class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace wit
     }
 
     def out(tuple: SituatedTuple): TupleOpId = TupleOpId(s"${mid}_out_${tuple.hashCode()}")(tuple.situation match {
-      case AroundMe(ext) => OutMe(tuple.tuple, mid, ext)
-      case region: Region => OutInRegion(tuple.tuple, mid, region)
+      case SpatiotemporalSituation(AroundMe(ext),_) => OutMe(tuple.tuple, mid, ext)
+      case SpatiotemporalSituation(region: Region,_) => OutInRegion(tuple.tuple, mid, region)
     })
 
     def rd(tupleTemplate: SituatedTupleTemplate): TupleOpId = TupleOpId(s"${mid}_rd_${tupleTemplate.hashCode()}")(tupleTemplate.situation match {
-      case AroundMe(ext) => Read(tupleTemplate.tupleTemplate, mid, extension = ext)
-      case region: Region => Read(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
+      case SpatiotemporalSituation(AroundMe(ext),_) => Read(tupleTemplate.tupleTemplate, mid, extension = ext)
+      case SpatiotemporalSituation(region: Region,_) => Read(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
     })
 
     def in(tupleTemplate: SituatedTupleTemplate): TupleOpId = TupleOpId(s"${mid}_in_${tupleTemplate.hashCode()}")(tupleTemplate.situation match {
-      case AroundMe(ext) => In(tupleTemplate.tupleTemplate, mid, extension = ext)
-      case region: Region => In(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
+      case SpatiotemporalSituation(AroundMe(ext),_) => In(tupleTemplate.tupleTemplate, mid, extension = ext)
+      case SpatiotemporalSituation(region: Region,_) => In(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
     })
 
     implicit class RichProcessOutput(pout: Map[TupleOpId,OperationResult]) {
@@ -191,11 +191,11 @@ class LindaDslTuplebasedInteraction extends AggregateProgram with TupleSpace wit
     }
 
     implicit class RichTuple(tuple: Tuple) {
-      def @@(situation: Situation): SituatedTuple = SituatedTuple(tuple, situation)
+      def @@(situation: SpatialSituation): SituatedTuple = SituatedTuple(tuple, situation)
     }
 
     implicit class RichTupleTemplate(template: TupleTemplate) {
-      def @@@(situation: Situation): SituatedTupleTemplate = SituatedTupleTemplate(template, situation)
+      def @@@(situation: SpatialSituation): SituatedTupleTemplate = SituatedTupleTemplate(template, situation)
     }
   }
 

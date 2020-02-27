@@ -45,6 +45,11 @@ trait TupleSpace {
     solution.map(s => Map(SOLUTION->s.solution) ++ s.bindings).getOrElse(Map.empty)
   }
 
+  def solveWithMatchesOpt(goal: String, vars: String*): Option[Seq[String]] = {
+    val map = solveWithMatches(goal)
+    if(map.isEmpty) None else Some(vars.map(v => map.get(v).get))
+  }
+
   def solutionsWithMatches(goal: String): List[Map[String,String]] = {
     val solution = solve(goal)
     solution.map(s => Map(SOLUTION->s.solution) ++ s.bindings)

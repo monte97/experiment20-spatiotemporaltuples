@@ -98,9 +98,9 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
   }
    */
 
-  def initialiseTasks = if(alchemistRandomGen.nextGaussian()>2.5){
+  def initialiseTasks = if(alchemistTimestamp.toDouble < 100 && alchemistRandomGen.nextGaussian()>3.0){
     val ext = alchemistRandomGen.nextInt(60)
-    addTupleIfNotAlreadyThere(s"taskToGenerate(task(x$k),$ext)")
+    addTupleIfNotAlreadyThere(s"taskToGenerate(task(x${mid}y$k),$ext)")
   }
 
   override def main(): Any = {
@@ -110,11 +110,11 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
     val task: Option[String] = solveWithMatch("currentTask(T)", "T")
     node.put("task", task)
     val taskGenerator = mid == 8 || mid == 117
-    val taskStealer = mid == 4 || mid == 13 || mid == 97
+    val taskStealer = mid % 27 == 0
     val taskReader = false // mid % 5 == 0
     // val doGenerateTask = taskGenerator && !taskProposal.isEmpty
     node.put("doGenerateTask", taskProposal.isDefined /* doGenerateTask */)
-    val doReadTask = (taskStealer || taskReader) && task.isEmpty
+    val doReadTask = alchemistTimestamp.toDouble < 150 && alchemistRandomGen.nextGaussian()>2.5 // (taskStealer || taskReader) && task.isEmpty
     node.put("doReadTask", taskReader && doReadTask)
     node.put("doStealTask", taskStealer && doReadTask)
 
@@ -127,7 +127,7 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
     }
 
     process(taskStealer){
-      when(doReadTask) { in("task(X)" @@@ AroundMe(50)) }.andNext((tuple: Tuple)  => {
+      when(doReadTask) { in("task(X)" @@@ AroundMe(alchemistRandomGen.nextDouble()*50 )) }.andNext((tuple: Tuple)  => {
         node.extendSetWith("ins_unblocked", tuple)
         out(s"currentTask(${tuple})" @@ Me)
       })
@@ -151,8 +151,8 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
 
     def when(condition: => Boolean)(expr: => TupleOpId): Map[TupleOpId,OperationResult] = {
       val c = enabled && condition
-      val toid = expr
-      sspawn(tupleOperation _, if(c) Set(toid) else Set.empty, ProcArg())
+      val toid: Set[TupleOpId] = if(goesUp(c)) Set(expr) else Set.empty
+      sspawn(tupleOperation _, toid, ProcArg())
     }
 
     def when[T](gen: => Option[T])(expr: T => TupleOpId): Map[TupleOpId,OperationResult] = {
@@ -165,12 +165,12 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
       case region: Region => OutInRegion(tuple.tuple, mid, region)
     })
 
-    def rd(tupleTemplate: SituatedTupleTemplate): TupleOpId = TupleOpId(s"${mid}_rd_${tupleTemplate.hashCode()}")(tupleTemplate.situation match {
+    def rd(tupleTemplate: SituatedTupleTemplate): TupleOpId = TupleOpId(s"${mid}_rd_$k")(tupleTemplate.situation match {
       case AroundMe(ext) => Read(tupleTemplate.tupleTemplate, mid, extension = ext)
       case region: Region => Read(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
     })
 
-    def in(tupleTemplate: SituatedTupleTemplate): TupleOpId = TupleOpId(s"${mid}_in_${tupleTemplate.hashCode()}")(tupleTemplate.situation match {
+    def in(tupleTemplate: SituatedTupleTemplate): TupleOpId = TupleOpId(s"${mid}_in_$k")(tupleTemplate.situation match {
       case AroundMe(ext) => In(tupleTemplate.tupleTemplate, mid, extension = ext)
       case region: Region => In(tupleTemplate.tupleTemplate, mid, extension = 20) // TODO
     })
@@ -211,9 +211,12 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
   }
 
   def consensus[T](data: Option[T], leader: Boolean, potential: Double): Option[T] = {
-    val collect = C[Double,Set[T]](potential, _++_, data.toSet, Set.empty)
-    val choice = rep[Option[T]](None){ v => v.filter(collect.contains(_)).orElse(collect.headOption) }
-    broadcastUnbounded(leader && !choice.isEmpty, choice)
+    val collect: Set[T] = C[Double,Set[T]](potential, _++_, data.toSet, Set.empty)
+    // if(leader && !collect.isEmpty){ println(s"${mid} > GOT REQUESTS FROM $collect") }
+    val choice = rep[Option[T]](None){ c => // if(leader && !collect.isEmpty && c.isDefined){ println(s"${mid} > old was $c") };
+      c.filter(collect.contains(_)).orElse(collect.headOption)
+    }
+    broadcastUnbounded(leader && !choice.isEmpty, if(leader) choice else None)
   }
 
   def tupleOperation(toid: TupleOpId)(arg: ProcArg): (OperationResult, Status) = {
@@ -270,7 +273,7 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
       removeTuple(s)
     } }{ None }
     // if(terminate){ println(s"${toid.uid} > ${mid} > OUT $s > terminate [$toid] {$k}") }
-    if(mid==initiator && nrounds==0) {
+    if(mid==initiator && nrounds==1) {
       node.extendSetWith("outs", toid.uid)
     }
     if(mid==initiator && terminate){
@@ -286,8 +289,9 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
     }
     import OutPhase._
 
-    rep(NORMAL)(p => {
-      var phase = p
+    rep[(OutPhase.Value,Option[String])]((NORMAL,None))(p => {
+      var (phase,oldRetriever) = p
+      // val retrieverStableFor = stableFor(oldRetriever)
       val leader = initiator==mid
       branch(phase!=CLOSING) {
         var processesWhoDidIN: List[Map[String, String]] = solutionsWithMatches(TupleRemovalRequested.matchTemplate).map(_.mapValues(_.stripQuotes))
@@ -296,9 +300,9 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
           val pid = retrieverMap(TupleRemovalRequested.By).stripQuotes
           val template = retrieverMap(TupleRemovalRequested.Template).stripQuotes
           val forThisTuple = new Prolog().`match`(Term.createTerm(s), Term.createTerm(template))
-          val exited = exists(s"""exit(${pid.quoted})""")
-          if (exited) removeTuple(TupleRemovalRequested.matchingTemplate(pid.quoted, template.quoted))
-          !exited && forThisTuple
+          /*val exited = exists(s"""exit(${pid.quoted})""")
+          if (exited){ removeTuple(TupleRemovalRequested.matchingTemplate(pid.quoted, template.quoted)) }
+          !exited && */ forThisTuple
         })
         // println(s"${toid.uid} > ${mid} > OUT > choosing the first of filtered $processesWhoDidIN")
         val retrieverData: Option[Map[String, String]] =  processesWhoDidIN.headOption // keepUnless[Map[String, String]](processesWhoDidIN.headOption, r => !processesWhoDidIN.exists(_.get(TupleRemovalRequested.By) == r))
@@ -306,11 +310,13 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
         val template: Option[TupleTemplate] = retrieverData.flatMap(_.get(TupleRemovalRequested.Template))
         val chosenRetriever: Option[String] = consensus(data = retriever, leader = leader, potential = g)
         // chosenRetriever.foreach(r => println(s"${toid.uid} > $mid > OUT > $s > consensus on retriever: $r {$k}"))
+        /*
         val supposedRetriever = chosenRetriever.getOrElse("").quoted
         if (leader) {
           val alreadyGivenTo: Option[String] = solveWithMatch(s"alreadyGiven(${toid.uid.quoted},By)", "By").map(_.stripQuotes)
           val exited = alreadyGivenTo.map(pid => exists(s"""exit(${pid.quoted})""")).getOrElse(false)
           if(exited){
+            println(s"${toid.uid} > ${mid} > already given to ${alreadyGivenTo} - exited? $exited")
             val markToRemove = s"alreadyGiven(${toid.uid.quoted},${alreadyGivenTo.get.quoted})"
             removeTuple(markToRemove)
             val eventToRemove = TupleRemovalOk(toid.uid, alreadyGivenTo.get, s)
@@ -321,19 +327,21 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
           // if(alreadyGiven){ println(s"${toid.uid} > $mid > OUT > $s was already given to $alreadyGivenTo {$k}") }
           chosenRetriever.foreach(r => if (!alreadyGiven) {
             addTuple(s"alreadyGiven(${toid.uid.quoted},${supposedRetriever})")
-            // println(s"${toid.uid} > $mid > OUT > $s > giving tuple $s to retriever $r {$k}")
+            println(s"${toid.uid} > $mid > OUT > $s > giving tuple $s to retriever $r {$k}")
             emitEvent(toid, TupleRemovalOk(toid.uid, r, s))
           })
         }
+        */
+        chosenRetriever.foreach(r => emitEvent(toid, TupleRemovalOk(toid.uid, r, s)))
         val inProcessDone: Map[String, String] = solveWithMatches(TupleRemovalDone.matchingTemplate(TupleRemovalDone.By, toid.uid.quoted)).mapValues(_.stripQuotes)
         // val inProcessDoneBy = inProcessDone.get(TupleRemovalDone.By)
         if (!inProcessDone.isEmpty) {
           // println(s"${toid.uid} > $mid > OUT > $s > closing since got $inProcessDone {$k}")
           phase = CLOSING
         }
-        phase
+        (phase, chosenRetriever)
       }{ p }
-    }) == CLOSING
+    })._1 == CLOSING
   }
 
   def OutInRegionLogic(toid: TupleOpId, outOp: OutInRegion, arg: ProcArg): (OperationResult, Status) = {
@@ -388,12 +396,14 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
 
     val (phase,by,result) = rep[(InPhase,Option[String],Option[Tuple])]((Start,None,None)){ case (p,outProc,theTuple) => {
       var phase = p
-      if (phase == Start) {
+      //if (phase == Start) {
         emitEvent(toid, TupleRemovalRequested(toid.uid, ttemplate))
-      } //else { retractEvent(inRequestToOut) }
-      val tupleToRemove: Map[String, String] = solveWithMatches(TupleRemovalOk.matchingTemplate(TupleRemovalOk.By,toid.uid.quoted,TupleRemovalOk.Tuple)).mapValues(_.stripQuotes)
-      val by = outProc.orElse(tupleToRemove.get(TupleRemovalOk.By))
-      val tuple = theTuple.orElse(tupleToRemove.get(TupleRemovalOk.Tuple)) // get tuple only if this process is the one chosen by the OUT
+      //} //else { retractEvent(inRequestToOut) }
+      val tuplesToRemove: List[Map[String, String]] = solutionsWithMatches(TupleRemovalOk.matchingTemplate(TupleRemovalOk.By,toid.uid.quoted,TupleRemovalOk.Tuple)).map(_.mapValues(_.stripQuotes))
+      val by = outProc.filter(op => tuplesToRemove.exists(_.get(TupleRemovalOk.By).map(_==op).getOrElse(true)))
+        .orElse(tuplesToRemove.headOption.flatMap(_.get(TupleRemovalOk.By)))
+      val tuple = theTuple.filter(op => tuplesToRemove.exists(_.get(TupleRemovalOk.Tuple).map(_==op).getOrElse(true)))
+        .orElse(tuplesToRemove.headOption.flatMap(_.get(TupleRemovalOk.Tuple))) // get tuple only if this process is the one chosen by the OUT
       // tuple.foreach(tuple => println(s"${toid.uid} > ${mid} > IN > I can remove tuple $tuple from $by {$k}"))
       val result = consensus[(String,Tuple)]((by,tuple).insideOut, mid==initiator, g)
       // result.foreach { r => println(s"${toid.uid} > ${mid} > IN > consensus on removing tuple ${r._1} from ${r._2} {$k}") }
@@ -401,7 +411,8 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
 
       if (mid == initiator && result.isDefined) addTupleIfNotAlreadyThere(result.get._2)
       val didRead: Option[(String,Tuple)] = broadcastUnbounded(mid == initiator, result)
-      val intermediaryGotAckFromReader = (for(intermediaryOutProc <- by; (chosenOutProc,_) <- didRead) yield intermediaryOutProc==chosenOutProc).getOrElse(false)
+      val intermediaryGotAckFromReader = (for(intermediaryOutProc <- by;
+                                              (chosenOutProc,_) <- didRead) yield intermediaryOutProc==chosenOutProc).getOrElse(false)
       if (intermediaryGotAckFromReader) {
         // println(s"${toid.uid} > $mid > IN > the initiator $initiator did read the tuple $tuple: emitting TupleRemovalDone {$k}");
         emitEvent(toid, TupleRemovalDone(toid.uid, didRead.get._1))
@@ -409,17 +420,19 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
       val ensureOutTermination = true // && localProcs.forall(lp => outProcess.map(_!=lp).getOrElse(true)))
       val done = broadcastUnbounded(intermediaryGotAckFromReader, intermediaryGotAckFromReader && ensureOutTermination)
       if (done) phase = Done
-      (phase, by, result.map(_._2))
+      (phase, result.map(_._1), result.map(_._2))
     }}
     node.put(s"${toid}_phase", phase + s" {$k}")
     node.put(s"${toid}_done", (phase==Done) + s" {$k}")
 
-    (OperationResult(if(result.isDefined) OperationStatus.completed else OperationStatus.inProgress, result), if(mid==initiator){
-      if(phase==Done) {
-        clearEvents(toid)
-        Terminated
-      } else Output // if(mid==initiator) Output else Bubble
-    } else if(g<extension) Bubble else External)
+    (OperationResult(if(result.isDefined) OperationStatus.completed else OperationStatus.inProgress, result.filter(_ => phase==Done)), branch(mid==initiator){
+      branch(phase==Done) {
+        // println(s"${toid.uid} > $mid [$initiator] > IN > Done [$phase] - got $result {$k}")
+        val newStatus = delay(Terminated,Output,2) // delay termination one round to allow
+        if(newStatus == Terminated){ clearEvents(toid) }
+        newStatus
+      }{ Bubble } // if(mid==initiator) Output else Bubble
+    } { if(g<extension) Bubble else External })
   }
 
   var eventMaps: Map[TupleOpId,Set[String]] = Map.empty
@@ -444,6 +457,8 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
 
     def countSet(name: String) =
       if(!node.has(name)) 0 else node.get[Set[Any]](name).size
+
+    def getOption[T](name: String): Option[T] = if(node.has(name)) Some(node.get[T](name)) else None
   }
 
   // TODO: add to stdlib
@@ -451,12 +466,16 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
   def none[T]: Option[T] = None
   def keep[T](expr: Option[T]): Option[T] = rep[Option[T]](None){ _.orElse(expr) }
   def keepUnless[T](expr: Option[T], reset: T=>Boolean): Option[T] = rep[Option[T]](None){ old => if(old.map(reset).getOrElse(false)) {
-    print("#")
+    // print("#")
     None
   } else old.orElse(expr) }
   def keep(expr: Boolean): Boolean = rep(false)(b => if(b) b else expr)
   def unchanged[T](value: T): Boolean = rep(value,true)( v => (value,value==v._1))._2
-  def delay[T](value: T, default: T): T = rep((default,default)){ case (old,_) => (value,old) }._2
+  def delay[T](value: T, default: T, nrounds: Int = 1): T = rep((default,default,0)){
+    case (old,_,k) => (if(k<nrounds) old else value, old, k+1)
+  }._2
+  def goesUp(c: Boolean): Boolean = rep((false,false)){ case (oldRes,oldC) => (!oldC && c, c) }._1
+  def stableFor[T](value: T): Int = rep((value,0)){ case (old,k) => (value, if(old==value) k+1 else 0) }._2
 
   implicit class MyRichStr(s: String){
     def stripQuotes = s.stripPrefix("'").stripSuffix("'")

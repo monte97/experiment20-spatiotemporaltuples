@@ -109,12 +109,12 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
     val taskProposal: Option[Seq[String]] = solveWithMatchesOpt("taskToGenerate(task(X),Y)", "X", "Y")
     val task: Option[String] = solveWithMatch("currentTask(T)", "T")
     node.put("task", task)
-    val taskGenerator = mid == 8 || mid == 117
-    val taskStealer = mid % 27 == 0
+    val taskGenerator = true // mid == 8 || mid == 117
+    val taskStealer = true // mid % 27 == 0
     val taskReader = false // mid % 5 == 0
     // val doGenerateTask = taskGenerator && !taskProposal.isEmpty
     node.put("doGenerateTask", taskProposal.isDefined /* doGenerateTask */)
-    val doReadTask = alchemistTimestamp.toDouble < 150 && alchemistRandomGen.nextGaussian()>2.5 // (taskStealer || taskReader) && task.isEmpty
+    val doReadTask = alchemistTimestamp.toDouble < 150 && alchemistRandomGen.nextGaussian()>2.75 // (taskStealer || taskReader) && task.isEmpty
     node.put("doReadTask", taskReader && doReadTask)
     node.put("doStealTask", taskStealer && doReadTask)
 
@@ -127,9 +127,8 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
     }
 
     process(taskStealer){
-      when(doReadTask) { in("task(X)" @@@ AroundMe(alchemistRandomGen.nextDouble()*50 )) }.andNext((tuple: Tuple)  => {
+      when(doReadTask) { in("task(X)" @@@ Everywhere) }.andNext((tuple: Tuple)  => {
         node.extendSetWith("ins_unblocked", tuple)
-        out(s"currentTask(${tuple})" @@ Me)
       })
     }
 
@@ -156,7 +155,7 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
     }
 
     def when[T](gen: => Option[T])(expr: T => TupleOpId): Map[TupleOpId,OperationResult] = {
-      val toid: Option[TupleOpId] = gen.map(expr)
+      val toid: Option[TupleOpId] = gen.filter(_ => enabled).map(expr)
       sspawn(tupleOperation _, toid.toSet, ProcArg())
     }
 
@@ -219,23 +218,40 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
     broadcastUnbounded(leader && !choice.isEmpty, if(leader) choice else None)
   }
 
-  def tupleOperation(toid: TupleOpId)(arg: ProcArg): (OperationResult, Status) = {
-    node.put(toid.uid, 1) // marker that a process instance has been executed
-
-    val res = toid.op match {
-      case outop@OutMe(s, initiator, extension) => OutMeLogic(toid, outop, arg)
-      case outop@OutInRegion(s, initiator, region) => OutInRegionLogic(toid, outop, arg)
-      case outop@OutHere(s, initiator, position, extension) => OutInRegionLogic(toid, OutInRegion(s, initiator, CircularRegion(position, extension)), arg)
-      case readop@Read(ttemplate, initiator, extension) => ReadLogic(toid, readop, arg)
-      case inop@In(ttemplate, initiator, extension) => InLogic(toid, inop, arg)
-      case _ => ??? // (OperationResult("invalid"), Terminated)
+  // Same as consensus() but once the leader selects one value, it keeps it
+  def consensusAndKeep[T](data: Option[T], leader: Boolean, potential: Double): Option[T] = {
+    val collect: Set[T] = C[Double,Set[T]](potential, _++_, data.toSet, Set.empty)
+    // if(leader && !collect.isEmpty){ println(s"${mid} > GOT REQUESTS FROM $collect") }
+    val choice = rep[Option[T]](None){ c => // if(leader && !collect.isEmpty && c.isDefined){ println(s"${mid} > old was $c") };
+      c.filter(collect.contains(_)).orElse(collect.headOption)
     }
+    val leaderChoice = branch(leader){ keep{ choice }} { None }
+    // if(leader && leaderChoice.isDefined){ println(s"${mid} > ${leaderChoice} is the leader choice ")}
+    broadcastUnbounded(leader && !leaderChoice.isEmpty, leaderChoice)
+  }
 
-    val status = res._2
-    node.put(toid.uid+"_op", toid.op + s"{$k}")
-    node.put(toid.uid+"_status", (if(status==Output) 2 else if(status==Bubble) 1 else if(status==Terminated) 3 else 0)+s" {$k}")
-    // println(s"[$mid] $toid -> $res")
-    res
+  def tupleOperation(toid: TupleOpId)(arg: ProcArg): (OperationResult, Status) = {
+    val firstTime = rep(0)(k => if(k==0) 1 else 2) == 1
+    branch(firstTime && node.has(toid.uid)){ // prevent reentrance
+      (OperationResult(OperationStatus.completed,None), External)
+    } {
+      node.put(toid.uid, 1) // marker that a process instance has been executed
+
+      val res = toid.op match {
+        case outop@OutMe(s, initiator, extension) => OutMeLogic(toid, outop, arg)
+        case outop@OutInRegion(s, initiator, region) => OutInRegionLogic(toid, outop, arg)
+        case outop@OutHere(s, initiator, position, extension) => OutInRegionLogic(toid, OutInRegion(s, initiator, CircularRegion(position, extension)), arg)
+        case readop@Read(ttemplate, initiator, extension) => ReadLogic(toid, readop, arg)
+        case inop@In(ttemplate, initiator, extension) => InLogic(toid, inop, arg)
+        case _ => ??? // (OperationResult("invalid"), Terminated)
+      }
+
+      val status = res._2
+      node.put(toid.uid + "_op", toid.op + s"{$k}")
+      node.put(toid.uid + "_status", (if (status == Output) 2 else if (status == Bubble) 1 else if (status == Terminated) 3 else 0) + s" {$k}")
+      // println(s"[$mid] $toid -> $res")
+      res
+    }
   }
 
   override def sspawn[A, B, C](process: A => B => (C, Status), params: Set[A], args: B): Map[A,C] = {
@@ -300,9 +316,9 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
           val pid = retrieverMap(TupleRemovalRequested.By).stripQuotes
           val template = retrieverMap(TupleRemovalRequested.Template).stripQuotes
           val forThisTuple = new Prolog().`match`(Term.createTerm(s), Term.createTerm(template))
-          /*val exited = exists(s"""exit(${pid.quoted})""")
+          val exited = exists(s"""exit(${pid.quoted})""") && !exists(TupleRemovalDone.matchingTemplate(pid.quoted,toid.uid.quoted))
           if (exited){ removeTuple(TupleRemovalRequested.matchingTemplate(pid.quoted, template.quoted)) }
-          !exited && */ forThisTuple
+          !exited && forThisTuple
         })
         // println(s"${toid.uid} > ${mid} > OUT > choosing the first of filtered $processesWhoDidIN")
         val retrieverData: Option[Map[String, String]] =  processesWhoDidIN.headOption // keepUnless[Map[String, String]](processesWhoDidIN.headOption, r => !processesWhoDidIN.exists(_.get(TupleRemovalRequested.By) == r))
@@ -310,13 +326,13 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
         val template: Option[TupleTemplate] = retrieverData.flatMap(_.get(TupleRemovalRequested.Template))
         val chosenRetriever: Option[String] = consensus(data = retriever, leader = leader, potential = g)
         // chosenRetriever.foreach(r => println(s"${toid.uid} > $mid > OUT > $s > consensus on retriever: $r {$k}"))
-        /*
         val supposedRetriever = chosenRetriever.getOrElse("").quoted
         if (leader) {
           val alreadyGivenTo: Option[String] = solveWithMatch(s"alreadyGiven(${toid.uid.quoted},By)", "By").map(_.stripQuotes)
-          val exited = alreadyGivenTo.map(pid => exists(s"""exit(${pid.quoted})""")).getOrElse(false)
+          val exited = alreadyGivenTo.map(pid => exists(s"""exit(${pid.quoted})""")
+            && !exists(TupleRemovalDone.matchingTemplate(pid.quoted,toid.uid.quoted))).getOrElse(false)
           if(exited){
-            println(s"${toid.uid} > ${mid} > already given to ${alreadyGivenTo} - exited? $exited")
+            // println(s"${toid.uid} > ${mid} > already given to ${alreadyGivenTo} - exited? $exited")
             val markToRemove = s"alreadyGiven(${toid.uid.quoted},${alreadyGivenTo.get.quoted})"
             removeTuple(markToRemove)
             val eventToRemove = TupleRemovalOk(toid.uid, alreadyGivenTo.get, s)
@@ -327,11 +343,10 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
           // if(alreadyGiven){ println(s"${toid.uid} > $mid > OUT > $s was already given to $alreadyGivenTo {$k}") }
           chosenRetriever.foreach(r => if (!alreadyGiven) {
             addTuple(s"alreadyGiven(${toid.uid.quoted},${supposedRetriever})")
-            println(s"${toid.uid} > $mid > OUT > $s > giving tuple $s to retriever $r {$k}")
+            // println(s"${toid.uid} > $mid > OUT > $s > giving tuple $s to retriever $r {$k}")
             emitEvent(toid, TupleRemovalOk(toid.uid, r, s))
           })
         }
-        */
         chosenRetriever.foreach(r => emitEvent(toid, TupleRemovalOk(toid.uid, r, s)))
         val inProcessDone: Map[String, String] = solveWithMatches(TupleRemovalDone.matchingTemplate(TupleRemovalDone.By, toid.uid.quoted)).mapValues(_.stripQuotes)
         // val inProcessDoneBy = inProcessDone.get(TupleRemovalDone.By)
@@ -379,6 +394,7 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
     // Note: IN is not trivial: Need consensus on the tuple to remove; As there might be multiple concurrent INs, these must be discriminated by a tuple's owner
     // So, it needs 2 feedback loops for 4 flows of events: 1) TupleRemovalRequested(by,tuple) -- 2) TupleRemovalOk(by) -- 3) TupleRemovalDone -- 4) TupleRemovalEnd
     val g = classicGradient(initiator==mid)
+    // val extension: Double = if(nrounds>30) Math.min(ext*2,50) else ext
     node.put(s"${toid.uid}_g", g)
     node.put(s"${toid.uid}_ext", extension)
 
@@ -410,7 +426,7 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
       if (result.isDefined) phase = Reading
 
       if (mid == initiator && result.isDefined) addTupleIfNotAlreadyThere(result.get._2)
-      val didRead: Option[(String,Tuple)] = broadcastUnbounded(mid == initiator, result)
+      val didRead: Option[(String,Tuple)] = broadcastUnbounded(mid == initiator, if(mid==initiator) result else None)
       val intermediaryGotAckFromReader = (for(intermediaryOutProc <- by;
                                               (chosenOutProc,_) <- didRead) yield intermediaryOutProc==chosenOutProc).getOrElse(false)
       if (intermediaryGotAckFromReader) {
@@ -430,7 +446,7 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
         // println(s"${toid.uid} > $mid [$initiator] > IN > Done [$phase] - got $result {$k}")
         val newStatus = delay(Terminated,Output,2) // delay termination one round to allow
         if(newStatus == Terminated){ clearEvents(toid) }
-        newStatus
+        if(nrounds==1){ print("*"); External } else newStatus
       }{ Bubble } // if(mid==initiator) Output else Bubble
     } { if(g<extension) Bubble else External })
   }

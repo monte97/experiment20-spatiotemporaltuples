@@ -33,6 +33,6 @@ force_limit_plot_y:
 #  0: 800
 #  1: 800
 #  3: 800
-sampling: false
+sampling: true
 #title_prefix: ''
 #excluded_titles: [0]

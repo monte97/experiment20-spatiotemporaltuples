@@ -20,8 +20,8 @@ default_colors: &default_colors ["black", "black", "orange","red","yellow",
 the_plots_colors:
   - *default_colors
 legend_position:
-  - "upper right"
-  - "upper right"
+  - "upper left"
+  - "upper left"
 legend_size: 12
 force_limit_plot_y:
 #  1: 140

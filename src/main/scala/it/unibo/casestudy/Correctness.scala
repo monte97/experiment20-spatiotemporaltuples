@@ -127,12 +127,12 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
     }
 
     process(taskStealer){
-      when(doReadTask) { in("task(X)" @@@ Everywhere) }.andNext((tuple: Tuple)  => {
+      when(doReadTask) { in("task(X)" @@@ AroundMe(50)) }.andNext((tuple: Tuple)  => {
         node.extendSetWith("ins_unblocked", tuple)
       })
     }
 
-    // node.put("theory", tupleSpace.getTheory.toString)
+    // if(k%10==0) node.put("theory", tupleSpace.getTheory.toString)
     node.put("outs_n", node.countSet("outs"))
     node.put("outs_closed_n", node.countSet("outs_closed"))
     node.put("ins_n", node.countSet("ins"))
@@ -232,7 +232,8 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
 
   def tupleOperation(toid: TupleOpId)(arg: ProcArg): (OperationResult, Status) = {
     val firstTime = rep(0)(k => if(k==0) 1 else 2) == 1
-    branch(firstTime && node.has(toid.uid)){ // prevent reentrance
+    branch(toid.op.initiator==mid && firstTime && node.has(toid.uid)){ // prevent reentrance
+      node.put(toid.uid, 2)
       (OperationResult(OperationStatus.completed,None), External)
     } {
       node.put(toid.uid, 1) // marker that a process instance has been executed
@@ -305,11 +306,10 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
     }
     import OutPhase._
 
-    rep[(OutPhase.Value,Option[String])]((NORMAL,None))(p => {
+    val (phase,inproc) = rep[(OutPhase.Value,Option[String])]((NORMAL,None))(p => {
       var (phase,oldRetriever) = p
       // val retrieverStableFor = stableFor(oldRetriever)
       val leader = initiator==mid
-      branch(phase!=CLOSING) {
         var processesWhoDidIN: List[Map[String, String]] = solutionsWithMatches(TupleRemovalRequested.matchTemplate).map(_.mapValues(_.stripQuotes))
         // println(s"${toid.uid} > ${mid} > OUT > $processesWhoDidIN asked for tuple $s")
         processesWhoDidIN = processesWhoDidIN.filter(retrieverMap => {
@@ -355,8 +355,9 @@ class Correctness extends AggregateProgram with TupleSpace with StandardSensors 
           phase = CLOSING
         }
         (phase, chosenRetriever)
-      }{ p }
-    })._1 == CLOSING
+    })
+    node.put(s"${toid.uid}_phase", phase + " -- " + inproc)
+    phase == CLOSING
   }
 
   def OutInRegionLogic(toid: TupleOpId, outOp: OutInRegion, arg: ProcArg): (OperationResult, Status) = {
